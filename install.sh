@@ -19,7 +19,8 @@ cat << 'EOF' > "${FILELIST_PATH}"
 <contentpackage name="HostingNetFix" modversion="1.0.0" corepackage="false" gameversion="1.13.5.0" />
 EOF
 
-# 2. Записываем серверный Lua-скрипт в LocalMods/HostingNetFix/Lua/Autorun/hosting_netfix.lua
+# 2. Скачиваем актуальный серверный Lua-скрипт из репозитория (с резервной локальной записью)
+if ! curl -fsSL "https://raw.githubusercontent.com/VORON2272/barotrauma-netfix/main/LocalMods/HostingNetFix/Lua/Autorun/hosting_netfix.lua" -o "${LUA_SCRIPT_PATH}" 2>/dev/null; then
 cat << 'EOF' > "${LUA_SCRIPT_PATH}"
 if not SERVER then return end
 
@@ -78,6 +79,7 @@ end)
 
 print("[HostingNetFix] Loaded server-side fix for Lobby UI sync, MissionTypes & A2S_RULES MTU.")
 EOF
+fi
 
 # 3. Прописываем LocalMods/HostingNetFix/filelist.xml в config_player.xml
 if [ ! -f "config_player.xml" ]; then
