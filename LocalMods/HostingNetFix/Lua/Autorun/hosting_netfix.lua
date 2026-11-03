@@ -6,10 +6,6 @@
 
 if not SERVER then return end
 
-pcall(function() LuaUserData.RegisterType("Barotrauma.Networking.Client") end)
-pcall(function() LuaUserData.RegisterType("Barotrauma.Networking.ServerSettings") end)
-pcall(function() LuaUserData.RegisterType("Steamworks.SteamServer") end)
-
 -- 1. Инициализация AllowedRandomMissionTypes при старте сервера
 if Game.Server and Game.Server.ServerSettings then
     if Game.Server.ServerSettings.AllowedRandomMissionTypes == nil then
@@ -47,14 +43,13 @@ end, Hook.HookMethodType.Before)
 -- 4. Автоматическая досылка полного состояния лобби (подлодки, биомы, настройки сервера)
 -- через 1.5с и 4.5с после входа игрока, когда его клиент завершил перезапуск LuaCs (Staging)
 local function resyncClientLobby(client)
-    if not client or client.Removed or Game.RoundStarted then return end
-    pcall(function() client.InitClientSync() end)
+    if not client or Game.RoundStarted then return end
     pcall(function()
+        if client.Connection == nil then return end
+        client.InitClientSync()
         if Game.Server and Game.Server.ServerSettings then
             Game.Server.ServerSettings.ForcePropertyUpdate()
         end
-    end)
-    pcall(function()
         if Game.NetLobbyScreen then
             Game.NetLobbyScreen.LastUpdateID = Game.NetLobbyScreen.LastUpdateID + 1
         end
