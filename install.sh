@@ -3,8 +3,6 @@
 # Запускается перед стартом DedicatedServer:
 # curl -fsSL https://raw.githubusercontent.com/VORON2272/barotrauma-netfix/main/install.sh | tr -d '\r' | bash
 
-set -e
-
 MOD_DIR="LocalMods/HostingNetFix"
 LUA_DIR="${MOD_DIR}/Lua/Autorun"
 FILELIST_PATH="${MOD_DIR}/filelist.xml"
@@ -47,6 +45,11 @@ local function applyPanelSettings()
         pcall(function() if cfg.ServerMessage and cfg.ServerMessage ~= "" then ss.ServerMessageText = cfg.ServerMessage end end)
         pcall(function() if cfg.MaxPlayers then ss.MaxPlayers = tonumber(cfg.MaxPlayers) or ss.MaxPlayers end end)
         pcall(function() if cfg.TickRate then ss.TickRate = math.max(1, math.min(60, tonumber(cfg.TickRate) or 60)) end end)
+        pcall(function()
+            if cfg.Language and cfg.Language ~= "" then
+                ss.Language = LanguageIdentifier(cfg.Language)
+            end
+        end)
         pcall(function() if cfg.IsPublic ~= nil then ss.IsPublic = cfg.IsPublic end end)
         pcall(function() if cfg.AllowFriendlyFire ~= nil then ss.AllowFriendlyFire = cfg.AllowFriendlyFire end end)
         pcall(function() if cfg.AllowRewiring ~= nil then ss.AllowRewiring = cfg.AllowRewiring end end)
@@ -181,7 +184,7 @@ if [ -n "${WORKSHOP_MODS}" ]; then
     fi
 fi
 
-# 5. Синхронизация всех настроек панели Pterodactyl с serversettings.xml И генерация panel_settings.lua для фикса мультиплеера
+# 5. Синхронизация всех настроек панели Pterodactyl с serversettings.xml И генерация panel_settings.lua
 if [ ! -f "$SETTINGS_FILE" ]; then
     cat << 'EOF' > "$SETTINGS_FILE"
 <?xml version="1.0" encoding="utf-8"?>
@@ -195,17 +198,18 @@ if [ ! -f "$SETTINGS_FILE" ]; then
 EOF
 fi
 
+# Используем разделитель # в sed (без конфликта с символом | внутри регулярки)
 set_xml_setting() {
     local key="$1"
     local val="$2"
     local file="$SETTINGS_FILE"
     local safe_val
-    safe_val=$(printf '%s' "$val" | sed 's/[&|]/\\&/g; s/"/\&quot;/g')
+    safe_val=$(printf '%s' "$val" | sed 's/[&#\\]/\\&/g; s/"/\&quot;/g')
 
     if grep -iqE "(^|[[:space:]])${key}=\"[^\"]*\"" "$file"; then
-        sed -i -E "s|(^|[[:space:]])${key}=\"[^\"]*\"|\1${key}=\"${safe_val}\"|Ig" "$file"
+        sed -i -E "s#(^|[[:space:]])${key}=\"[^\"]*\"#\1${key}=\"${safe_val}\"#Ig" "$file"
     else
-        sed -i "s|<serversettings|<serversettings\n  ${key}=\"${safe_val}\"|" "$file"
+        sed -i "s#<serversettings#<serversettings\n  ${key}=\"${safe_val}\"#" "$file"
     fi
 }
 
@@ -233,7 +237,10 @@ if [ -n "${TICKRATE}" ]; then
     printf '  TickRate = %s,\n' "${TR_VAL}" >> "${PANEL_LUA_PATH}"
 fi
 [ -n "${PLAYSTYLE}" ] && set_xml_setting "PlayStyle" "${PLAYSTYLE}"
-[ -n "${LANGUAGE}" ] && set_xml_setting "Language" "${LANGUAGE}"
+if [ -n "${LANGUAGE}" ]; then
+    set_xml_setting "Language" "${LANGUAGE}"
+    printf '  Language = %q,\n' "${LANGUAGE}" >> "${PANEL_LUA_PATH}"
+fi
 if [ -n "${RESPAWN_INTERVAL}" ]; then
     set_xml_setting "RespawnInterval" "${RESPAWN_INTERVAL}"
     printf '  RespawnInterval = %s,\n' "${RESPAWN_INTERVAL}" >> "${PANEL_LUA_PATH}"
@@ -366,15 +373,16 @@ if [ -n "${OWNER_STEAMID}" ]; then
 </ClientPermissions>
 EOF
     elif ! grep -q "${OWNER_STEAMID}" "$PERM_FILE"; then
-        sed -i "s|</ClientPermissions>|  <Client name=\"Owner\" steamid=\"${OWNER_STEAMID}\" permissions=\"All\" />\n</ClientPermissions>|" "$PERM_FILE"
+        sed -i "s#</ClientPermissions>#  <Client name=\"Owner\" steamid=\"${OWNER_STEAMID}\" permissions=\"All\" />\n</ClientPermissions>#" "$PERM_FILE"
     fi
 fi
 
-# 7. Прописываем LocalMods/HostingNetFix/filelist.xml (и другие LocalMods при ADD_PACKAGES=1) в config_player.xml
+# 7. Прописываем LocalMods/HostingNetFix/filelist.xml и выбранный LANGUAGE в config_player.xml
+CFG_LANG="${LANGUAGE:-Russian}"
 if [ ! -f "config_player.xml" ]; then
-    cat << 'EOF' > "config_player.xml"
+    cat << EOF > "config_player.xml"
 <?xml version="1.0" encoding="utf-8"?>
-<config language="Russian">
+<config language="${CFG_LANG}">
   <contentpackages>
     <!--Vanilla-->
     <corepackage path="Content/ContentPackages/Vanilla.xml" />
@@ -386,19 +394,22 @@ if [ ! -f "config_player.xml" ]; then
 </config>
 EOF
 else
+    if [ -n "${LANGUAGE}" ]; then
+        sed -i -E "s#language=\"[^\"]*\"#language=\"${LANGUAGE}\"#Ig" "config_player.xml"
+    fi
     if grep -q "<regularpackages[[:space:]]*/>" "config_player.xml"; then
-        sed -i 's|<regularpackages[[:space:]]*/>|<regularpackages>\n    </regularpackages>|' "config_player.xml"
+        sed -i 's#<regularpackages[[:space:]]*/>#<regularpackages>\n    </regularpackages>#' "config_player.xml"
     fi
     if ! grep -q "LocalMods/HostingNetFix/filelist.xml" "config_player.xml"; then
-        sed -i 's|</regularpackages>|  <!--HostingNetFix-->\n      <package path="LocalMods/HostingNetFix/filelist.xml" />\n    </regularpackages>|' "config_player.xml"
+        sed -i 's#</regularpackages>#  <!--HostingNetFix-->\n      <package path="LocalMods/HostingNetFix/filelist.xml" />\n    </regularpackages>#' "config_player.xml"
     fi
     if [ "${ADD_PACKAGES:-1}" = "1" ]; then
         for FILE in $(find LocalMods -maxdepth 2 -name "filelist.xml" 2>/dev/null); do
             if [ "$FILE" != "LocalMods/LuaCsForBarotrauma/filelist.xml" ] && ! grep -q "$FILE" "config_player.xml"; then
-                sed -i "s|</regularpackages>|  <package path=\"$FILE\" />\n    </regularpackages>|" "config_player.xml"
+                sed -i "s#</regularpackages>#  <package path=\"$FILE\" />\n    </regularpackages>#" "config_player.xml"
             fi
         done
     fi
 fi
 
-echo "[HostingNetFix] Настройки панели переданы в Lua-фикс (${PANEL_LUA_PATH}) и синхронизированы с serversettings.xml."
+echo "[HostingNetFix] Настройки панели (включая Language=${CFG_LANG}) синхронизированы с config_player.xml, serversettings.xml и Lua-фиксом."

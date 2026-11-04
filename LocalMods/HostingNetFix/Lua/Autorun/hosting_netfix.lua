@@ -1,6 +1,6 @@
 -- LocalMods/HostingNetFix/Lua/Autorun/hosting_netfix.lua
 -- Серверный сетевой фикс и применение всех настроек панели Pterodactyl внутри LuaCs:
--- 1. Применение всех настроек из панели (TickRate, MaxPlayers, ServerName, Боты, Режим и т.д.) напрямую в Game.Server.ServerSettings
+-- 1. Применение всех настроек из панели (TickRate, MaxPlayers, ServerName, Language, PlayStyle, Боты, Режим и т.д.)
 -- 2. Защита от падения ServerSettings.get_MissionTypes (NullReference / ArgumentNullException)
 -- 3. Сжатие UDP-ответа A2S_RULES до 1 пакета (< 800 байт, защита от дропа по MTU / ТСПУ в РФ)
 -- 4. Повторная синхронизация лобби (InitClientSync + ForcePropertyUpdate) после загрузки LuaCs у клиента
@@ -33,6 +33,11 @@ local function applyPanelSettings()
         pcall(function() if cfg.ServerMessage and cfg.ServerMessage ~= "" then ss.ServerMessageText = cfg.ServerMessage end end)
         pcall(function() if cfg.MaxPlayers then ss.MaxPlayers = tonumber(cfg.MaxPlayers) or ss.MaxPlayers end end)
         pcall(function() if cfg.TickRate then ss.TickRate = math.max(1, math.min(60, tonumber(cfg.TickRate) or 60)) end end)
+        pcall(function()
+            if cfg.Language and cfg.Language ~= "" then
+                ss.Language = LanguageIdentifier(cfg.Language)
+            end
+        end)
         pcall(function() if cfg.IsPublic ~= nil then ss.IsPublic = cfg.IsPublic end end)
         pcall(function() if cfg.AllowFriendlyFire ~= nil then ss.AllowFriendlyFire = cfg.AllowFriendlyFire end end)
         pcall(function() if cfg.AllowRewiring ~= nil then ss.AllowRewiring = cfg.AllowRewiring end end)
@@ -56,7 +61,7 @@ local function applyPanelSettings()
         end)
         pcall(function() ss.ForcePropertyUpdate() end)
         pcall(function() ss.SaveSettings() end)
-        print("[HostingNetFix] Настройки панели Pterodactyl применены напрямую в ServerSettings (TickRate=" .. tostring(ss.TickRate) .. ", MaxPlayers=" .. tostring(ss.MaxPlayers) .. ").")
+        print("[HostingNetFix] Настройки панели применены (TickRate=" .. tostring(ss.TickRate) .. ", MaxPlayers=" .. tostring(ss.MaxPlayers) .. ", Language=" .. tostring(cfg.Language or "") .. ").")
     end
 end
 
