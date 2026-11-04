@@ -123,13 +123,12 @@ Hook.Add("clientConnected", "HostingNetFix_ResyncLobby", function(client)
     Timer.Wait(function() resyncClientLobby(client) end, 4500)
 end)
 
-print("[HostingNetFix] Loaded server-side fix for Lobby UI sync, MissionTypes & A2S_RULES MTU.")
+print("[HostingNetFix] Мод загружен")
 EOF
 fi
 
 # 3. Установка патча LuaCsForBarotrauma (если включено INSTALL_LUACS=1 или если LuaCs ещё не установлен)
 if [ "${INSTALL_LUACS:-1}" = "1" ] && [ ! -d "LocalMods/LuaCsForBarotrauma" ]; then
-    echo "[HostingNetFix] Установка патча LuaCsForBarotrauma..."
     LUACS_ZIP="/tmp/luacs_patch.zip"
     if [ -z "${LUACS_VERSION}" ] || [ "${LUACS_VERSION}" = "latest" ]; then
         LUACS_URL="https://github.com/evilfactory/LuaCsForBarotrauma/releases/latest/download/luacsforbarotrauma_patch_linux_server.zip"
@@ -140,7 +139,7 @@ if [ "${INSTALL_LUACS:-1}" = "1" ] && [ ! -d "LocalMods/LuaCsForBarotrauma" ]; t
         unzip -o -q "$LUACS_ZIP" -d "$PWD/"
         rm -f "$LUACS_ZIP"
         chmod +x ./DedicatedServer 2>/dev/null || true
-        echo "[HostingNetFix] Патч LuaCsForBarotrauma успешно установлен в $PWD"
+        echo "[LuaCs] Установлен"
     fi
 fi
 
@@ -412,4 +411,4 @@ else
     fi
 fi
 
-echo "[HostingNetFix] Настройки панели (включая Language=${CFG_LANG}) синхронизированы с config_player.xml, serversettings.xml и Lua-фиксом."
+echo "[HostingNetFix] Конфиг обновлён"

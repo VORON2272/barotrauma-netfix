@@ -61,7 +61,6 @@ local function applyPanelSettings()
         end)
         pcall(function() ss.ForcePropertyUpdate() end)
         pcall(function() ss.SaveSettings() end)
-        print("[HostingNetFix] Настройки панели применены (TickRate=" .. tostring(ss.TickRate) .. ", MaxPlayers=" .. tostring(ss.MaxPlayers) .. ", Language=" .. tostring(cfg.Language or "") .. ").")
     end
 end
 
@@ -115,4 +114,4 @@ Hook.Add("clientConnected", "HostingNetFix_ResyncLobby", function(client)
     Timer.Wait(function() resyncClientLobby(client) end, 4500)
 end)
 
-print("[HostingNetFix] Загружен серверный фикс: синхронизация UI лобби, настройки панели, защита MissionTypes и сжатие A2S_RULES (MTU РФ).")
+print("[HostingNetFix] Мод загружен")
