@@ -156,22 +156,6 @@ Hook.Patch("Barotrauma.Networking.ServerSettings", "get_MissionTypes", function(
     end
 end, Hook.HookMethodType.Before)
 
--- 5. Защита A2S_RULES от превышения MTU и фильтрации фрагментированных UDP на ТСПУ РФ
-Hook.Patch("Steamworks.SteamServer", "SetKey", function(instance, ptable)
-    local k = tostring(ptable["Key"] or "")
-    if string.sub(k, 1, 7) == "message" and k ~= "message0" and k ~= "messagecount" then
-        ptable.PreventExecution = true
-        return
-    end
-    if string.sub(k, 1, 14) == "contentpackage" then
-        local idx = tonumber(string.sub(k, 15))
-        if idx and idx >= 3 then
-            ptable.PreventExecution = true
-            return
-        end
-    end
-end, Hook.HookMethodType.Before)
-
 -- 6. Автоматическая досылка полного состояния лобби (включая список подлодок) и выдача консольных команд админам
 local function resyncClientLobby(client)
     if not client or Game.RoundStarted then return end
