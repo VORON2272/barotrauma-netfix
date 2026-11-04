@@ -112,6 +112,7 @@ end
 Hook.Add("clientConnected", "HostingNetFix_ResyncLobby", function(client)
     Timer.Wait(function() resyncClientLobby(client) end, 1500)
     Timer.Wait(function() resyncClientLobby(client) end, 4500)
+    Timer.Wait(function() resyncClientLobby(client) end, 8500)
 end)
 
 print("[HostingNetFix] Мод загружен")

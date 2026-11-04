@@ -12,6 +12,7 @@ SETTINGS_FILE="serversettings.xml"
 
 mkdir -p "${LUA_DIR}"
 
+if [ "${ENABLE_NETFIX:-1}" = "1" ]; then
 # 1. Создаём пустой по контенту filelist.xml (HasMultiplayerSyncedContent = false,
 #    поэтому игрокам НЕ нужно скачивать этот мод из Steam для входа на сервер)
 cat << 'EOF' > "${FILELIST_PATH}"
@@ -121,11 +122,19 @@ end
 Hook.Add("clientConnected", "HostingNetFix_ResyncLobby", function(client)
     Timer.Wait(function() resyncClientLobby(client) end, 1500)
     Timer.Wait(function() resyncClientLobby(client) end, 4500)
+    Timer.Wait(function() resyncClientLobby(client) end, 8500)
 end)
 
 print("[HostingNetFix] Мод загружен")
 EOF
 fi
+else
+    rm -rf "${MOD_DIR}" 2>/dev/null || true
+    if [ -f "config_player.xml" ]; then
+        sed -i '/HostingNetFix/d' "config_player.xml"
+    fi
+fi
+mkdir -p "${MOD_DIR}/Lua" 2>/dev/null || true
 
 # 3. Установка патча LuaCsForBarotrauma (если включено INSTALL_LUACS=1 или если LuaCs ещё не установлен)
 if [ "${INSTALL_LUACS:-1}" = "1" ] && [ ! -d "LocalMods/LuaCsForBarotrauma" ]; then
@@ -386,29 +395,34 @@ if [ ! -f "config_player.xml" ]; then
     <!--Vanilla-->
     <corepackage path="Content/ContentPackages/Vanilla.xml" />
     <regularpackages>
-      <!--HostingNetFix-->
-      <package path="LocalMods/HostingNetFix/filelist.xml" />
     </regularpackages>
   </contentpackages>
 </config>
 EOF
-else
-    if [ -n "${LANGUAGE}" ]; then
-        sed -i -E "s#language=\"[^\"]*\"#language=\"${LANGUAGE}\"#Ig" "config_player.xml"
-    fi
-    if grep -q "<regularpackages[[:space:]]*/>" "config_player.xml"; then
-        sed -i 's#<regularpackages[[:space:]]*/>#<regularpackages>\n    </regularpackages>#' "config_player.xml"
-    fi
+fi
+
+if [ -n "${LANGUAGE}" ]; then
+    sed -i -E "s#language=\"[^\"]*\"#language=\"${LANGUAGE}\"#Ig" "config_player.xml"
+fi
+if grep -q "<regularpackages[[:space:]]*/>" "config_player.xml"; then
+    sed -i 's#<regularpackages[[:space:]]*/>#<regularpackages>\n    </regularpackages>#' "config_player.xml"
+fi
+
+if [ "${ENABLE_NETFIX:-1}" = "1" ]; then
     if ! grep -q "LocalMods/HostingNetFix/filelist.xml" "config_player.xml"; then
         sed -i 's#</regularpackages>#  <!--HostingNetFix-->\n      <package path="LocalMods/HostingNetFix/filelist.xml" />\n    </regularpackages>#' "config_player.xml"
     fi
-    if [ "${ADD_PACKAGES:-1}" = "1" ]; then
-        for FILE in $(find LocalMods -maxdepth 2 -name "filelist.xml" 2>/dev/null); do
-            if [ "$FILE" != "LocalMods/LuaCsForBarotrauma/filelist.xml" ] && ! grep -q "$FILE" "config_player.xml"; then
-                sed -i "s#</regularpackages>#  <package path=\"$FILE\" />\n    </regularpackages>#" "config_player.xml"
-            fi
-        done
-    fi
+else
+    rm -rf "${MOD_DIR}" 2>/dev/null || true
+    sed -i '/HostingNetFix/d' "config_player.xml"
+fi
+
+if [ "${ADD_PACKAGES:-1}" = "1" ]; then
+    for FILE in $(find LocalMods -maxdepth 2 -name "filelist.xml" 2>/dev/null); do
+        if [ "$FILE" != "LocalMods/LuaCsForBarotrauma/filelist.xml" ] && ! grep -q "$FILE" "config_player.xml"; then
+            sed -i "s#</regularpackages>#  <package path=\"$FILE\" />\n    </regularpackages>#" "config_player.xml"
+        fi
+    done
 fi
 
 echo "[HostingNetFix] Конфиг обновлён"
