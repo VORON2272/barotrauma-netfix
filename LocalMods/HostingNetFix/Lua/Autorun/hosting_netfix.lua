@@ -156,6 +156,24 @@ Hook.Patch("Barotrauma.Networking.ServerSettings", "get_MissionTypes", function(
     end
 end, Hook.HookMethodType.Before)
 
+-- 5. Очистка управляющих символов (\r, \n и т.п.) в имени сервера: из-за них сервер пропадает из списка Steam
+local function sanitizeServerName()
+    pcall(function()
+        local ss = Game.ServerSettings or (Game.Server and Game.Server.ServerSettings)
+        if not ss then return end
+        local name = tostring(ss.ServerName or "")
+        local clean = name:gsub("[%c]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if clean ~= "" and clean ~= name then
+            ss.ServerName = clean
+            print("[HostingNetFix] Имя сервера очищено от скрытых символов: " .. clean)
+        end
+    end)
+end
+
+sanitizeServerName()
+Timer.Wait(sanitizeServerName, 3000)
+Hook.Add("clientConnected", "HostingNetFix_SanitizeName", function() sanitizeServerName() end)
+Hook.Add("clientDisconnected", "HostingNetFix_SanitizeNameD", function() Timer.Wait(sanitizeServerName, 500) end)
 -- 6. Автоматическая досылка полного состояния лобби (включая список подлодок) и выдача консольных команд админам
 local function resyncClientLobby(client)
     if not client or Game.RoundStarted then return end
