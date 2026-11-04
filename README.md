@@ -23,5 +23,5 @@
    ```
 3. В настройках вашего Egg в Pterodactyl укажите короткую строку **Startup Command**:
    ```bash
-   bash run.sh && (curl -fsSL https://raw.githubusercontent.com/VORON2272/barotrauma-netfix/main/install.sh | tr -d '\r' | bash || true) && export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$PWD/linux64" && port={{SERVER_PORT}} && ./DedicatedServer -port $port -queryport $(( $port + 1 ))
+   if [ "${ENABLE_NETFIX:-1}" != "1" ]; then rm -rf LocalMods/HostingNetFix && [ -f config_player.xml ] && sed -i '/HostingNetFix/d' config_player.xml || true; fi && bash run.sh && if [ "${ENABLE_NETFIX:-1}" = "1" ]; then (curl -fsSL https://raw.githubusercontent.com/VORON2272/barotrauma-netfix/main/install.sh | tr -d '\r' | bash || true); fi && export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$PWD/linux64" && port={{SERVER_PORT}} && ./DedicatedServer -port $port -queryport $(( $port + 1 ))
    ```
