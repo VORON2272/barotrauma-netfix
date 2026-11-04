@@ -9,6 +9,7 @@ MOD_DIR="LocalMods/HostingNetFix"
 LUA_DIR="${MOD_DIR}/Lua/Autorun"
 FILELIST_PATH="${MOD_DIR}/filelist.xml"
 LUA_SCRIPT_PATH="${LUA_DIR}/hosting_netfix.lua"
+PANEL_LUA_PATH="${MOD_DIR}/Lua/panel_settings.lua"
 SETTINGS_FILE="serversettings.xml"
 
 mkdir -p "${LUA_DIR}"
@@ -25,11 +26,54 @@ if ! curl -fsSL "https://raw.githubusercontent.com/VORON2272/barotrauma-netfix/m
 cat << 'EOF' > "${LUA_SCRIPT_PATH}"
 if not SERVER then return end
 
-if Game.Server and Game.Server.ServerSettings then
-    if Game.Server.ServerSettings.AllowedRandomMissionTypes == nil then
-        Game.Server.ServerSettings.MissionTypes = "All"
+local modPath = ...
+
+local function applyPanelSettings()
+    if not Game.Server or not Game.Server.ServerSettings then return end
+    local ss = Game.Server.ServerSettings
+    if ss.AllowedRandomMissionTypes == nil then
+        ss.MissionTypes = "All"
+    end
+    local ok, cfg = pcall(function()
+        if modPath and File.Exists(modPath .. "/Lua/panel_settings.lua") then
+            return dofile(modPath .. "/Lua/panel_settings.lua")
+        elseif File.Exists("LocalMods/HostingNetFix/Lua/panel_settings.lua") then
+            return dofile("LocalMods/HostingNetFix/Lua/panel_settings.lua")
+        end
+        return nil
+    end)
+    if ok and type(cfg) == "table" then
+        pcall(function() if cfg.ServerName and cfg.ServerName ~= "" then ss.ServerName = cfg.ServerName end end)
+        pcall(function() if cfg.ServerMessage and cfg.ServerMessage ~= "" then ss.ServerMessageText = cfg.ServerMessage end end)
+        pcall(function() if cfg.MaxPlayers then ss.MaxPlayers = tonumber(cfg.MaxPlayers) or ss.MaxPlayers end end)
+        pcall(function() if cfg.TickRate then ss.TickRate = math.max(1, math.min(60, tonumber(cfg.TickRate) or 60)) end end)
+        pcall(function() if cfg.IsPublic ~= nil then ss.IsPublic = cfg.IsPublic end end)
+        pcall(function() if cfg.AllowFriendlyFire ~= nil then ss.AllowFriendlyFire = cfg.AllowFriendlyFire end end)
+        pcall(function() if cfg.AllowRewiring ~= nil then ss.AllowRewiring = cfg.AllowRewiring end end)
+        pcall(function() if cfg.AllowSpectating ~= nil then ss.AllowSpectating = cfg.AllowSpectating end end)
+        pcall(function() if cfg.RespawnInterval then ss.RespawnInterval = tonumber(cfg.RespawnInterval) or ss.RespawnInterval end end)
+        pcall(function() if cfg.TraitorProbability then ss.TraitorProbability = tonumber(cfg.TraitorProbability) or ss.TraitorProbability end end)
+        pcall(function()
+            if cfg.BotCount then
+                ss.BotCount = tonumber(cfg.BotCount) or 0
+                if Game.NetLobbyScreen then Game.NetLobbyScreen.SetBotCount(ss.BotCount) end
+            end
+        end)
+        pcall(function() if cfg.KarmaEnabled ~= nil then ss.KarmaEnabled = cfg.KarmaEnabled end end)
+        pcall(function() if cfg.AutoRestart ~= nil then ss.AutoRestart = cfg.AutoRestart end end)
+        pcall(function() if cfg.VoiceChatEnabled ~= nil then ss.VoiceChatEnabled = cfg.VoiceChatEnabled end end)
+        pcall(function()
+            if cfg.GameModeIdentifier and cfg.GameModeIdentifier ~= "" then
+                ss.GameModeIdentifier = Identifier(cfg.GameModeIdentifier)
+                if Game.NetLobbyScreen then Game.NetLobbyScreen.SelectedModeIdentifier = ss.GameModeIdentifier end
+            end
+        end)
+        pcall(function() ss.ForcePropertyUpdate() end)
+        pcall(function() ss.SaveSettings() end)
     end
 end
+
+applyPanelSettings()
 
 Hook.Patch("Barotrauma.Networking.ServerSettings", "get_MissionTypes", function(instance, ptable)
     if instance.AllowedRandomMissionTypes == nil then
@@ -58,6 +102,9 @@ local function resyncClientLobby(client)
     if not client or Game.RoundStarted then return end
     pcall(function()
         if client.Connection == nil then return end
+        if client.HasPermission and client.HasPermission(ClientPermissions.ConsoleCommands) then
+            client.SetPermissions(client.Permissions, DebugConsole.Commands)
+        end
         client.InitClientSync()
         if Game.Server and Game.Server.ServerSettings then
             Game.Server.ServerSettings.ForcePropertyUpdate()
@@ -134,8 +181,7 @@ if [ -n "${WORKSHOP_MODS}" ]; then
     fi
 fi
 
-# 5. Синхронизация всех настроек панели Pterodactyl с serversettings.xml
-#    (Исправлен баг регистра grep -i / sed -I: теперь заменяет и нижний, и верхний регистр атрибутов)
+# 5. Синхронизация всех настроек панели Pterodactyl с serversettings.xml И генерация panel_settings.lua для фикса мультиплеера
 if [ ! -f "$SETTINGS_FILE" ]; then
     cat << 'EOF' > "$SETTINGS_FILE"
 <?xml version="1.0" encoding="utf-8"?>
@@ -153,7 +199,6 @@ set_xml_setting() {
     local key="$1"
     local val="$2"
     local file="$SETTINGS_FILE"
-    # Экранируем спецсимволы для sed (& и |)
     local safe_val
     safe_val=$(printf '%s' "$val" | sed 's/[&|]/\\&/g; s/"/\&quot;/g')
 
@@ -164,29 +209,44 @@ set_xml_setting() {
     fi
 }
 
+echo "return {" > "${PANEL_LUA_PATH}"
+
 if [ -n "${SERVER_NAME}" ]; then
     set_xml_setting "ServerName" "${SERVER_NAME}"
     set_xml_setting "name" "${SERVER_NAME}"
+    printf '  ServerName = %q,\n' "${SERVER_NAME}" >> "${PANEL_LUA_PATH}"
 fi
 [ -n "${SERVER_PASSWORD+x}" ] && set_xml_setting "password" "${SERVER_PASSWORD}"
-[ -n "${SERVER_MESSAGE}" ] && set_xml_setting "ServerMessageText" "${SERVER_MESSAGE}"
-[ -n "${MAX_PLAYERS}" ] && set_xml_setting "MaxPlayers" "${MAX_PLAYERS}"
+if [ -n "${SERVER_MESSAGE}" ]; then
+    set_xml_setting "ServerMessageText" "${SERVER_MESSAGE}"
+    printf '  ServerMessage = %q,\n' "${SERVER_MESSAGE}" >> "${PANEL_LUA_PATH}"
+fi
+if [ -n "${MAX_PLAYERS}" ]; then
+    set_xml_setting "MaxPlayers" "${MAX_PLAYERS}"
+    printf '  MaxPlayers = %s,\n' "${MAX_PLAYERS}" >> "${PANEL_LUA_PATH}"
+fi
 if [ -n "${TICKRATE}" ]; then
-    # В Barotrauma C# TickRate зажимается в диапазоне 1..60
     TR_VAL="${TICKRATE}"
     [ "$TR_VAL" -gt 60 ] 2>/dev/null && TR_VAL=60
     [ "$TR_VAL" -lt 1 ] 2>/dev/null && TR_VAL=20
     set_xml_setting "TickRate" "${TR_VAL}"
+    printf '  TickRate = %s,\n' "${TR_VAL}" >> "${PANEL_LUA_PATH}"
 fi
 [ -n "${PLAYSTYLE}" ] && set_xml_setting "PlayStyle" "${PLAYSTYLE}"
 [ -n "${LANGUAGE}" ] && set_xml_setting "Language" "${LANGUAGE}"
-[ -n "${RESPAWN_INTERVAL}" ] && set_xml_setting "RespawnInterval" "${RESPAWN_INTERVAL}"
+if [ -n "${RESPAWN_INTERVAL}" ]; then
+    set_xml_setting "RespawnInterval" "${RESPAWN_INTERVAL}"
+    printf '  RespawnInterval = %s,\n' "${RESPAWN_INTERVAL}" >> "${PANEL_LUA_PATH}"
+fi
 if [ -n "${TRAITOR_PROBABILITY}" ]; then
-    # В Barotrauma TraitorProbability хранится как число от 0.0 до 1.0 (проценты / 100)
     TP_FLOAT=$(awk "BEGIN { v = ${TRAITOR_PROBABILITY} + 0; if (v > 1.0) v = v / 100.0; if (v < 0) v = 0; if (v > 1) v = 1; printf \"%.2f\", v }")
     set_xml_setting "TraitorProbability" "${TP_FLOAT}"
+    printf '  TraitorProbability = %s,\n' "${TP_FLOAT}" >> "${PANEL_LUA_PATH}"
 fi
-[ -n "${BOT_COUNT}" ] && set_xml_setting "BotCount" "${BOT_COUNT}"
+if [ -n "${BOT_COUNT}" ]; then
+    set_xml_setting "BotCount" "${BOT_COUNT}"
+    printf '  BotCount = %s,\n' "${BOT_COUNT}" >> "${PANEL_LUA_PATH}"
+fi
 [ -n "${SUB_VOTING}" ] && set_xml_setting "SubSelectionMode" "${SUB_VOTING}"
 [ -n "${MODE_VOTING}" ] && set_xml_setting "ModeSelectionMode" "${MODE_VOTING}"
 
@@ -194,22 +254,42 @@ if [ -n "${PUBLIC_SERVER}" ]; then
     if [ "${PUBLIC_SERVER}" = "1" ] || [ "${PUBLIC_SERVER}" = "true" ] || [ "${PUBLIC_SERVER}" = "True" ]; then
         set_xml_setting "IsPublic" "True"
         set_xml_setting "public" "True"
+        echo "  IsPublic = true," >> "${PANEL_LUA_PATH}"
     else
         set_xml_setting "IsPublic" "False"
         set_xml_setting "public" "False"
+        echo "  IsPublic = false," >> "${PANEL_LUA_PATH}"
     fi
 fi
 
 if [ -n "${ALLOW_FRIENDLY_FIRE}" ]; then
-    [ "${ALLOW_FRIENDLY_FIRE}" = "1" ] && set_xml_setting "AllowFriendlyFire" "True" || set_xml_setting "AllowFriendlyFire" "False"
+    if [ "${ALLOW_FRIENDLY_FIRE}" = "1" ]; then
+        set_xml_setting "AllowFriendlyFire" "True"
+        echo "  AllowFriendlyFire = true," >> "${PANEL_LUA_PATH}"
+    else
+        set_xml_setting "AllowFriendlyFire" "False"
+        echo "  AllowFriendlyFire = false," >> "${PANEL_LUA_PATH}"
+    fi
 fi
 
 if [ -n "${ALLOW_REWIRING}" ]; then
-    [ "${ALLOW_REWIRING}" = "1" ] && set_xml_setting "AllowRewiring" "True" || set_xml_setting "AllowRewiring" "False"
+    if [ "${ALLOW_REWIRING}" = "1" ]; then
+        set_xml_setting "AllowRewiring" "True"
+        echo "  AllowRewiring = true," >> "${PANEL_LUA_PATH}"
+    else
+        set_xml_setting "AllowRewiring" "False"
+        echo "  AllowRewiring = false," >> "${PANEL_LUA_PATH}"
+    fi
 fi
 
 if [ -n "${ALLOW_SPECTATING}" ]; then
-    [ "${ALLOW_SPECTATING}" = "1" ] && set_xml_setting "AllowSpectating" "True" || set_xml_setting "AllowSpectating" "False"
+    if [ "${ALLOW_SPECTATING}" = "1" ]; then
+        set_xml_setting "AllowSpectating" "True"
+        echo "  AllowSpectating = true," >> "${PANEL_LUA_PATH}"
+    else
+        set_xml_setting "AllowSpectating" "False"
+        echo "  AllowSpectating = false," >> "${PANEL_LUA_PATH}"
+    fi
 fi
 
 if [ -n "${ALLOW_RESPAWN}" ]; then
@@ -217,34 +297,53 @@ if [ -n "${ALLOW_RESPAWN}" ]; then
 fi
 
 if [ -n "${KARMA_ENABLED}" ]; then
-    [ "${KARMA_ENABLED}" = "1" ] && set_xml_setting "KarmaEnabled" "True" || set_xml_setting "KarmaEnabled" "False"
+    if [ "${KARMA_ENABLED}" = "1" ]; then
+        set_xml_setting "KarmaEnabled" "True"
+        echo "  KarmaEnabled = true," >> "${PANEL_LUA_PATH}"
+    else
+        set_xml_setting "KarmaEnabled" "False"
+        echo "  KarmaEnabled = false," >> "${PANEL_LUA_PATH}"
+    fi
 fi
 
 if [ -n "${AUTO_RESTART}" ]; then
-    [ "${AUTO_RESTART}" = "1" ] && set_xml_setting "AutoRestart" "True" || set_xml_setting "AutoRestart" "False"
-    [ "${AUTO_RESTART}" = "1" ] && set_xml_setting "autorestart" "true" || set_xml_setting "autorestart" "false"
+    if [ "${AUTO_RESTART}" = "1" ]; then
+        set_xml_setting "AutoRestart" "True"
+        set_xml_setting "autorestart" "true"
+        echo "  AutoRestart = true," >> "${PANEL_LUA_PATH}"
+    else
+        set_xml_setting "AutoRestart" "False"
+        set_xml_setting "autorestart" "false"
+        echo "  AutoRestart = false," >> "${PANEL_LUA_PATH}"
+    fi
 fi
 
 if [ -n "${VOICE_CHAT}" ]; then
     if [ "${VOICE_CHAT}" = "1" ] || [ "${VOICE_CHAT}" = "Local" ] || [ "${VOICE_CHAT}" = "True" ]; then
         set_xml_setting "VoiceChatEnabled" "True"
+        echo "  VoiceChatEnabled = true," >> "${PANEL_LUA_PATH}"
     else
         set_xml_setting "VoiceChatEnabled" "False"
+        echo "  VoiceChatEnabled = false," >> "${PANEL_LUA_PATH}"
     fi
 fi
 
 if [ -n "${GAME_MODE}" ]; then
     GMLOW=$(echo "${GAME_MODE}" | tr '[:upper:]' '[:lower:]')
     if [[ "$GMLOW" == *"camp"* ]]; then
-        set_xml_setting "GameModeIdentifier" "multiplayercampaign"
+        GM_ID="multiplayercampaign"
     elif [[ "$GMLOW" == *"sand"* ]]; then
-        set_xml_setting "GameModeIdentifier" "sandbox"
+        GM_ID="sandbox"
     elif [[ "$GMLOW" == *"pvp"* ]]; then
-        set_xml_setting "GameModeIdentifier" "pvp"
+        GM_ID="pvp"
     else
-        set_xml_setting "GameModeIdentifier" "mission"
+        GM_ID="mission"
     fi
+    set_xml_setting "GameModeIdentifier" "$GM_ID"
+    printf '  GameModeIdentifier = %q,\n' "$GM_ID" >> "${PANEL_LUA_PATH}"
 fi
+
+echo "}" >> "${PANEL_LUA_PATH}"
 
 if [ -n "${SERVER_PORT}" ]; then
     set_xml_setting "port" "${SERVER_PORT}"
@@ -302,4 +401,4 @@ else
     fi
 fi
 
-echo "[HostingNetFix] Настройки панели синхронизированы с serversettings.xml, мод зарегистрирован в config_player.xml."
+echo "[HostingNetFix] Настройки панели переданы в Lua-фикс (${PANEL_LUA_PATH}) и синхронизированы с serversettings.xml."
