@@ -170,8 +170,18 @@ local function sanitizeServerName()
     end)
 end
 
+-- Barotrauma поддерживает максимум 64 игрока; большее значение скрывает сервер из списка
+local function clampMaxPlayers()
+    pcall(function()
+        local ss = Game.ServerSettings or (Game.Server and Game.Server.ServerSettings)
+        if ss and ss.MaxPlayers and ss.MaxPlayers > 64 then ss.MaxPlayers = 64 end
+    end)
+end
+
 sanitizeServerName()
 Timer.Wait(sanitizeServerName, 3000)
+clampMaxPlayers()
+Timer.Wait(clampMaxPlayers, 3000)
 Hook.Add("clientConnected", "HostingNetFix_SanitizeName", function() sanitizeServerName() end)
 Hook.Add("clientDisconnected", "HostingNetFix_SanitizeNameD", function() Timer.Wait(sanitizeServerName, 500) end)
 -- 6. Автоматическая досылка полного состояния лобби (включая список подлодок) и выдача консольных команд админам
