@@ -109,7 +109,7 @@ local function applyPanelSettings()
         return nil
     end)
 
-    if ok and type(cfg) == "table" then
+    if ok and type(cfg) == "table" and next(cfg) ~= nil then
         pcall(function() if cfg.ServerName and cfg.ServerName ~= "" then ss.ServerName = cfg.ServerName end end)
         pcall(function() if cfg.ServerMessage and cfg.ServerMessage ~= "" then ss.ServerMessageText = cfg.ServerMessage end end)
         pcall(function() if cfg.MaxPlayers then ss.MaxPlayers = tonumber(cfg.MaxPlayers) or ss.MaxPlayers end end)

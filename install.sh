@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — Автоматическая установка серверного фикса HostingNetFix и синхронизация всех настроек панели Pterodactyl для Barotrauma
+# install.sh — Автоматическая установка серверного фикса HostingNetFix и синхронизация настроек панели Pterodactyl для Barotrauma
 # Запускается перед стартом DedicatedServer:
 # curl -fsSL https://raw.githubusercontent.com/VORON2272/barotrauma-netfix/main/install.sh | tr -d '\r' | bash
 
@@ -8,6 +8,7 @@ LUA_DIR="${MOD_DIR}/Lua/Autorun"
 FILELIST_PATH="${MOD_DIR}/filelist.xml"
 LUA_SCRIPT_PATH="${LUA_DIR}/hosting_netfix.lua"
 PANEL_LUA_PATH="${MOD_DIR}/Lua/panel_settings.lua"
+SNAPSHOT_FILE="${MOD_DIR}/.panel_env_snapshot"
 SETTINGS_FILE="serversettings.xml"
 
 mkdir -p "${LUA_DIR}"
@@ -26,13 +27,91 @@ cat << 'EOF' > "${LUA_SCRIPT_PATH}"
 if not SERVER then return end
 
 local modPath = ...
+local SAFE_LIDGREN_MTU = 1150
+
+pcall(function() LuaUserData.RegisterType("Barotrauma.Networking.GameServer") end)
+pcall(function() LuaUserData.RegisterType("Barotrauma.Networking.ServerSettings") end)
+pcall(function() LuaUserData.RegisterType("Barotrauma.Networking.ServerPeer") end)
+pcall(function() LuaUserData.RegisterType("Barotrauma.Networking.NetworkConnection") end)
+pcall(function() LuaUserData.RegisterType("Barotrauma.DebugConsole") end)
+
+pcall(function()
+    local peerDesc = LuaUserData.RegisterType("Barotrauma.Networking.LidgrenServerPeer")
+    if peerDesc then
+        LuaUserData.MakeFieldAccessible(peerDesc, "netPeerConfiguration")
+        LuaUserData.MakeFieldAccessible(peerDesc, "netServer")
+    end
+    local lcDesc = LuaUserData.RegisterType("Barotrauma.Networking.LidgrenConnection")
+    if lcDesc then
+        LuaUserData.MakeFieldAccessible(lcDesc, "NetConnection")
+    end
+    local npcDesc = LuaUserData.RegisterType("Lidgren.Network.NetPeerConfiguration")
+    if npcDesc then
+        LuaUserData.MakeFieldAccessible(npcDesc, "m_maximumTransmissionUnit")
+    end
+    local ncDesc = LuaUserData.RegisterType("Lidgren.Network.NetConnection")
+    if ncDesc then
+        LuaUserData.MakeFieldAccessible(ncDesc, "m_currentMTU")
+    end
+    LuaUserData.RegisterType("Lidgren.Network.NetPeer")
+    LuaUserData.RegisterType("Lidgren.Network.NetServer")
+end)
+
+local function clampConnectionMTU(conn)
+    if not conn then return end
+    pcall(function()
+        local netConn = conn.NetConnection
+        if netConn and netConn.m_currentMTU and netConn.m_currentMTU > SAFE_LIDGREN_MTU then
+            netConn.m_currentMTU = SAFE_LIDGREN_MTU
+        end
+    end)
+end
+
+local function clampServerPeerMTU()
+    pcall(function()
+        local peer = Game.Peer
+        if peer and peer.netPeerConfiguration then
+            peer.netPeerConfiguration.m_maximumTransmissionUnit = SAFE_LIDGREN_MTU
+        end
+        if Client and Client.ClientList then
+            for _, c in pairs(Client.ClientList) do
+                if c and c.Connection then
+                    clampConnectionMTU(c.Connection)
+                end
+            end
+        end
+    end)
+end
+
+clampServerPeerMTU()
+
+pcall(function()
+    Hook.Patch("Lidgren.Network.NetPeer", "GetMTU", function(instance, ptable)
+        ptable.PreventExecution = true
+        ptable.ReturnValue = SAFE_LIDGREN_MTU
+        return SAFE_LIDGREN_MTU
+    end, Hook.HookMethodType.Before)
+end)
+
+pcall(function()
+    Hook.Patch("Barotrauma.Networking.LidgrenServerPeer", "ForwardToLidgren", function(instance, ptable)
+        local conn = ptable["connection"]
+        if conn then
+            clampConnectionMTU(conn)
+        end
+    end, Hook.HookMethodType.Before)
+end)
 
 local function applyPanelSettings()
-    if not Game.Server or not Game.Server.ServerSettings then return end
-    local ss = Game.Server.ServerSettings
-    if ss.AllowedRandomMissionTypes == nil then
-        ss.MissionTypes = "All"
-    end
+    local ss = Game.ServerSettings or (Game.Server and Game.Server.ServerSettings)
+    if not ss then return end
+
+    pcall(function()
+        if ss.AllowedRandomMissionTypes == nil then
+            ss.MissionTypes = "All"
+        end
+    end)
+
     local ok, cfg = pcall(function()
         if modPath and File.Exists(modPath .. "/Lua/panel_settings.lua") then
             return dofile(modPath .. "/Lua/panel_settings.lua")
@@ -41,7 +120,8 @@ local function applyPanelSettings()
         end
         return nil
     end)
-    if ok and type(cfg) == "table" then
+
+    if ok and type(cfg) == "table" and next(cfg) ~= nil then
         pcall(function() if cfg.ServerName and cfg.ServerName ~= "" then ss.ServerName = cfg.ServerName end end)
         pcall(function() if cfg.ServerMessage and cfg.ServerMessage ~= "" then ss.ServerMessageText = cfg.ServerMessage end end)
         pcall(function() if cfg.MaxPlayers then ss.MaxPlayers = tonumber(cfg.MaxPlayers) or ss.MaxPlayers end end)
@@ -106,26 +186,42 @@ local function resyncClientLobby(client)
     if not client or Game.RoundStarted then return end
     pcall(function()
         if client.Connection == nil then return end
-        if client.HasPermission and client.HasPermission(ClientPermissions.ConsoleCommands) then
-            client.SetPermissions(client.Permissions, DebugConsole.Commands)
-        end
-        client.InitClientSync()
-        if Game.Server and Game.Server.ServerSettings then
-            Game.Server.ServerSettings.ForcePropertyUpdate()
+        clampConnectionMTU(client.Connection)
+
+        pcall(function()
+            if client.HasPermission and client.HasPermission(ClientPermissions.ConsoleCommands) and Game.Commands then
+                client.SetPermissions(client.Permissions, Game.Commands)
+            end
+        end)
+
+        local ss = Game.ServerSettings or (Game.Server and Game.Server.ServerSettings)
+        if ss then
+            pcall(function() ss.ForcePropertyUpdate() end)
         end
         if Game.NetLobbyScreen then
-            Game.NetLobbyScreen.LastUpdateID = Game.NetLobbyScreen.LastUpdateID + 1
+            pcall(function()
+                Game.NetLobbyScreen.LastUpdateID = Game.NetLobbyScreen.LastUpdateID + 1
+            end)
+        end
+
+        client.InitClientSync()
+
+        if Networking and Networking.ClientWriteLobby then
+            Networking.ClientWriteLobby(client)
         end
     end)
 end
 
 Hook.Add("clientConnected", "HostingNetFix_ResyncLobby", function(client)
-    Timer.Wait(function() resyncClientLobby(client) end, 1500)
-    Timer.Wait(function() resyncClientLobby(client) end, 4500)
-    Timer.Wait(function() resyncClientLobby(client) end, 8500)
+    if client and client.Connection then
+        clampConnectionMTU(client.Connection)
+    end
+    Timer.Wait(function() resyncClientLobby(client) end, 1000)
+    Timer.Wait(function() resyncClientLobby(client) end, 3500)
+    Timer.Wait(function() resyncClientLobby(client) end, 7500)
 end)
 
-print("[HostingNetFix] Мод загружен")
+print("[HostingNetFix] Мод загружен (MTU=" .. tostring(SAFE_LIDGREN_MTU) .. ")")
 EOF
 fi
 else
@@ -192,8 +288,12 @@ if [ -n "${WORKSHOP_MODS}" ]; then
     fi
 fi
 
-# 5. Синхронизация всех настроек панели Pterodactyl с serversettings.xml И генерация panel_settings.lua
+# 5. Бережная синхронизация настроек:
+#    Если serversettings.xml уже существует, мы НЕ затираем его дефолтами панели,
+#    а меняем только те параметры, которые пользователь явно задал или изменил в панели Pterodactyl.
+NEW_SETTINGS_FILE=0
 if [ ! -f "$SETTINGS_FILE" ]; then
+    NEW_SETTINGS_FILE=1
     cat << 'EOF' > "$SETTINGS_FILE"
 <?xml version="1.0" encoding="utf-8"?>
 <serversettings
@@ -206,7 +306,37 @@ if [ ! -f "$SETTINGS_FILE" ]; then
 EOF
 fi
 
-# Используем разделитель # в sed (без конфликта с символом | внутри регулярки)
+if [ -f "$SNAPSHOT_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$SNAPSHOT_FILE" 2>/dev/null || true
+    HAS_SNAPSHOT=1
+else
+    HAS_SNAPSHOT=0
+fi
+
+# Проверяет, нужно ли применять переменную из панели:
+# Возвращает 0 (применять), если:
+# - переменная не пустая, И
+# - либо файл serversettings.xml только что создан с нуля,
+# - либо есть прошлый снимок и значение переменной в панели изменилось с прошлого запуска,
+# - либо снимка ещё нет, но значение отличается от старых дефолтов Egg.
+should_apply_var() {
+    local var_name="$1"
+    local default_egg_val="$2"
+    local cur_val="${!var_name}"
+    local prev_var="PREV_${var_name}"
+    local prev_val="${!prev_var}"
+
+    [ -z "$cur_val" ] && return 1
+    [ "$NEW_SETTINGS_FILE" = "1" ] && return 0
+
+    if [ "$HAS_SNAPSHOT" = "1" ]; then
+        [ "$cur_val" != "$prev_val" ] && return 0 || return 1
+    else
+        [ "$cur_val" != "$default_egg_val" ] && return 0 || return 1
+    fi
+}
+
 set_xml_setting() {
     local key="$1"
     local val="$2"
@@ -223,49 +353,62 @@ set_xml_setting() {
 
 echo "return {" > "${PANEL_LUA_PATH}"
 
-if [ -n "${SERVER_NAME}" ]; then
+if should_apply_var "SERVER_NAME" "Hosting-Project Encelada"; then
     set_xml_setting "ServerName" "${SERVER_NAME}"
     set_xml_setting "name" "${SERVER_NAME}"
     printf '  ServerName = %q,\n' "${SERVER_NAME}" >> "${PANEL_LUA_PATH}"
 fi
-[ -n "${SERVER_PASSWORD+x}" ] && set_xml_setting "password" "${SERVER_PASSWORD}"
-if [ -n "${SERVER_MESSAGE}" ]; then
+if should_apply_var "SERVER_PASSWORD" ""; then
+    set_xml_setting "password" "${SERVER_PASSWORD}"
+elif [ "$HAS_SNAPSHOT" = "1" ] && [ -z "${SERVER_PASSWORD}" ] && [ -n "${PREV_SERVER_PASSWORD}" ]; then
+    set_xml_setting "password" ""
+fi
+if should_apply_var "SERVER_MESSAGE" "Добро пожаловать на наш сервер Barotrauma!"; then
     set_xml_setting "ServerMessageText" "${SERVER_MESSAGE}"
     printf '  ServerMessage = %q,\n' "${SERVER_MESSAGE}" >> "${PANEL_LUA_PATH}"
 fi
-if [ -n "${MAX_PLAYERS}" ]; then
+if should_apply_var "MAX_PLAYERS" "16"; then
     set_xml_setting "MaxPlayers" "${MAX_PLAYERS}"
     printf '  MaxPlayers = %s,\n' "${MAX_PLAYERS}" >> "${PANEL_LUA_PATH}"
 fi
-if [ -n "${TICKRATE}" ]; then
+if should_apply_var "TICKRATE" "60"; then
     TR_VAL="${TICKRATE}"
     [ "$TR_VAL" -gt 60 ] 2>/dev/null && TR_VAL=60
     [ "$TR_VAL" -lt 1 ] 2>/dev/null && TR_VAL=20
     set_xml_setting "TickRate" "${TR_VAL}"
     printf '  TickRate = %s,\n' "${TR_VAL}" >> "${PANEL_LUA_PATH}"
 fi
-[ -n "${PLAYSTYLE}" ] && set_xml_setting "PlayStyle" "${PLAYSTYLE}"
-if [ -n "${LANGUAGE}" ]; then
+if should_apply_var "PLAYSTYLE" "Casual"; then
+    set_xml_setting "PlayStyle" "${PLAYSTYLE}"
+fi
+if should_apply_var "LANGUAGE" "Russian"; then
     set_xml_setting "Language" "${LANGUAGE}"
     printf '  Language = %q,\n' "${LANGUAGE}" >> "${PANEL_LUA_PATH}"
+    if [ -f "config_player.xml" ]; then
+        sed -i -E "s#language=\"[^\"]*\"#language=\"${LANGUAGE}\"#Ig" "config_player.xml"
+    fi
 fi
-if [ -n "${RESPAWN_INTERVAL}" ]; then
+if should_apply_var "RESPAWN_INTERVAL" "300"; then
     set_xml_setting "RespawnInterval" "${RESPAWN_INTERVAL}"
     printf '  RespawnInterval = %s,\n' "${RESPAWN_INTERVAL}" >> "${PANEL_LUA_PATH}"
 fi
-if [ -n "${TRAITOR_PROBABILITY}" ]; then
+if should_apply_var "TRAITOR_PROBABILITY" "0"; then
     TP_FLOAT=$(awk "BEGIN { v = ${TRAITOR_PROBABILITY} + 0; if (v > 1.0) v = v / 100.0; if (v < 0) v = 0; if (v > 1) v = 1; printf \"%.2f\", v }")
     set_xml_setting "TraitorProbability" "${TP_FLOAT}"
     printf '  TraitorProbability = %s,\n' "${TP_FLOAT}" >> "${PANEL_LUA_PATH}"
 fi
-if [ -n "${BOT_COUNT}" ]; then
+if should_apply_var "BOT_COUNT" "0"; then
     set_xml_setting "BotCount" "${BOT_COUNT}"
     printf '  BotCount = %s,\n' "${BOT_COUNT}" >> "${PANEL_LUA_PATH}"
 fi
-[ -n "${SUB_VOTING}" ] && set_xml_setting "SubSelectionMode" "${SUB_VOTING}"
-[ -n "${MODE_VOTING}" ] && set_xml_setting "ModeSelectionMode" "${MODE_VOTING}"
+if should_apply_var "SUB_VOTING" "Vote"; then
+    set_xml_setting "SubSelectionMode" "${SUB_VOTING}"
+fi
+if should_apply_var "MODE_VOTING" "Vote"; then
+    set_xml_setting "ModeSelectionMode" "${MODE_VOTING}"
+fi
 
-if [ -n "${PUBLIC_SERVER}" ]; then
+if should_apply_var "PUBLIC_SERVER" "1"; then
     if [ "${PUBLIC_SERVER}" = "1" ] || [ "${PUBLIC_SERVER}" = "true" ] || [ "${PUBLIC_SERVER}" = "True" ]; then
         set_xml_setting "IsPublic" "True"
         set_xml_setting "public" "True"
@@ -277,7 +420,7 @@ if [ -n "${PUBLIC_SERVER}" ]; then
     fi
 fi
 
-if [ -n "${ALLOW_FRIENDLY_FIRE}" ]; then
+if should_apply_var "ALLOW_FRIENDLY_FIRE" "1"; then
     if [ "${ALLOW_FRIENDLY_FIRE}" = "1" ]; then
         set_xml_setting "AllowFriendlyFire" "True"
         echo "  AllowFriendlyFire = true," >> "${PANEL_LUA_PATH}"
@@ -287,7 +430,7 @@ if [ -n "${ALLOW_FRIENDLY_FIRE}" ]; then
     fi
 fi
 
-if [ -n "${ALLOW_REWIRING}" ]; then
+if should_apply_var "ALLOW_REWIRING" "1"; then
     if [ "${ALLOW_REWIRING}" = "1" ]; then
         set_xml_setting "AllowRewiring" "True"
         echo "  AllowRewiring = true," >> "${PANEL_LUA_PATH}"
@@ -297,7 +440,7 @@ if [ -n "${ALLOW_REWIRING}" ]; then
     fi
 fi
 
-if [ -n "${ALLOW_SPECTATING}" ]; then
+if should_apply_var "ALLOW_SPECTATING" "1"; then
     if [ "${ALLOW_SPECTATING}" = "1" ]; then
         set_xml_setting "AllowSpectating" "True"
         echo "  AllowSpectating = true," >> "${PANEL_LUA_PATH}"
@@ -307,11 +450,11 @@ if [ -n "${ALLOW_SPECTATING}" ]; then
     fi
 fi
 
-if [ -n "${ALLOW_RESPAWN}" ]; then
+if should_apply_var "ALLOW_RESPAWN" "1"; then
     [ "${ALLOW_RESPAWN}" = "1" ] && set_xml_setting "RespawnMode" "MidRound" || set_xml_setting "RespawnMode" "None"
 fi
 
-if [ -n "${KARMA_ENABLED}" ]; then
+if should_apply_var "KARMA_ENABLED" "0"; then
     if [ "${KARMA_ENABLED}" = "1" ]; then
         set_xml_setting "KarmaEnabled" "True"
         echo "  KarmaEnabled = true," >> "${PANEL_LUA_PATH}"
@@ -321,7 +464,7 @@ if [ -n "${KARMA_ENABLED}" ]; then
     fi
 fi
 
-if [ -n "${AUTO_RESTART}" ]; then
+if should_apply_var "AUTO_RESTART" "0"; then
     if [ "${AUTO_RESTART}" = "1" ]; then
         set_xml_setting "AutoRestart" "True"
         set_xml_setting "autorestart" "true"
@@ -333,7 +476,7 @@ if [ -n "${AUTO_RESTART}" ]; then
     fi
 fi
 
-if [ -n "${VOICE_CHAT}" ]; then
+if should_apply_var "VOICE_CHAT" "1"; then
     if [ "${VOICE_CHAT}" = "1" ] || [ "${VOICE_CHAT}" = "Local" ] || [ "${VOICE_CHAT}" = "True" ]; then
         set_xml_setting "VoiceChatEnabled" "True"
         echo "  VoiceChatEnabled = true," >> "${PANEL_LUA_PATH}"
@@ -343,7 +486,7 @@ if [ -n "${VOICE_CHAT}" ]; then
     fi
 fi
 
-if [ -n "${GAME_MODE}" ]; then
+if should_apply_var "GAME_MODE" "Campaign"; then
     GMLOW=$(echo "${GAME_MODE}" | tr '[:upper:]' '[:lower:]')
     if [[ "$GMLOW" == *"camp"* ]]; then
         GM_ID="multiplayercampaign"
@@ -359,6 +502,31 @@ if [ -n "${GAME_MODE}" ]; then
 fi
 
 echo "}" >> "${PANEL_LUA_PATH}"
+
+# Сохраняем снимок текущих переменных панели для сравнения при следующем рестарте
+cat << EOF > "${SNAPSHOT_FILE}"
+PREV_SERVER_NAME=$(printf '%q' "${SERVER_NAME}")
+PREV_SERVER_PASSWORD=$(printf '%q' "${SERVER_PASSWORD}")
+PREV_SERVER_MESSAGE=$(printf '%q' "${SERVER_MESSAGE}")
+PREV_MAX_PLAYERS=$(printf '%q' "${MAX_PLAYERS}")
+PREV_TICKRATE=$(printf '%q' "${TICKRATE}")
+PREV_PLAYSTYLE=$(printf '%q' "${PLAYSTYLE}")
+PREV_LANGUAGE=$(printf '%q' "${LANGUAGE}")
+PREV_RESPAWN_INTERVAL=$(printf '%q' "${RESPAWN_INTERVAL}")
+PREV_TRAITOR_PROBABILITY=$(printf '%q' "${TRAITOR_PROBABILITY}")
+PREV_BOT_COUNT=$(printf '%q' "${BOT_COUNT}")
+PREV_SUB_VOTING=$(printf '%q' "${SUB_VOTING}")
+PREV_MODE_VOTING=$(printf '%q' "${MODE_VOTING}")
+PREV_PUBLIC_SERVER=$(printf '%q' "${PUBLIC_SERVER}")
+PREV_ALLOW_FRIENDLY_FIRE=$(printf '%q' "${ALLOW_FRIENDLY_FIRE}")
+PREV_ALLOW_REWIRING=$(printf '%q' "${ALLOW_REWIRING}")
+PREV_ALLOW_SPECTATING=$(printf '%q' "${ALLOW_SPECTATING}")
+PREV_ALLOW_RESPAWN=$(printf '%q' "${ALLOW_RESPAWN}")
+PREV_KARMA_ENABLED=$(printf '%q' "${KARMA_ENABLED}")
+PREV_AUTO_RESTART=$(printf '%q' "${AUTO_RESTART}")
+PREV_VOICE_CHAT=$(printf '%q' "${VOICE_CHAT}")
+PREV_GAME_MODE=$(printf '%q' "${GAME_MODE}")
+EOF
 
 if [ -n "${SERVER_PORT}" ]; then
     set_xml_setting "port" "${SERVER_PORT}"
@@ -385,7 +553,7 @@ EOF
     fi
 fi
 
-# 7. Прописываем LocalMods/HostingNetFix/filelist.xml и выбранный LANGUAGE в config_player.xml
+# 7. Прописываем LocalMods/HostingNetFix/filelist.xml в config_player.xml
 CFG_LANG="${LANGUAGE:-Russian}"
 if [ ! -f "config_player.xml" ]; then
     cat << EOF > "config_player.xml"
@@ -401,9 +569,6 @@ if [ ! -f "config_player.xml" ]; then
 EOF
 fi
 
-if [ -n "${LANGUAGE}" ]; then
-    sed -i -E "s#language=\"[^\"]*\"#language=\"${LANGUAGE}\"#Ig" "config_player.xml"
-fi
 if grep -q "<regularpackages[[:space:]]*/>" "config_player.xml"; then
     sed -i 's#<regularpackages[[:space:]]*/>#<regularpackages>\n    </regularpackages>#' "config_player.xml"
 fi
