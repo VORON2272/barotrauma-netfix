@@ -341,13 +341,33 @@ set_xml_setting() {
     local key="$1"
     local val="$2"
     local file="$SETTINGS_FILE"
-    local safe_val
-    safe_val=$(printf '%s' "$val" | sed 's/[&#\\]/\\&/g; s/"/\&quot;/g')
 
-    if grep -iqE "(^|[[:space:]])${key}=\"[^\"]*\"" "$file"; then
-        sed -i -E "s#(^|[[:space:]])${key}=\"[^\"]*\"#\1${key}=\"${safe_val}\"#Ig" "$file"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import sys, re, html
+key, val, file = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(file, 'r', encoding='utf-8') as f:
+        c = f.read()
+    safe = html.escape(val, quote=True).replace('\r', '').replace('\n', '&#xA;')
+    pattern = r'(^|[\s<])(' + re.escape(key) + r'=\"[^\"]*\")'
+    if re.search(pattern, c, re.IGNORECASE):
+        c = re.sub(pattern, lambda m: m.group(1) + f'{key}=\"{safe}\"', c, flags=re.IGNORECASE)
+    else:
+        c = re.sub(r'<serversettings\b', f'<serversettings\n  {key}=\"{safe}\"', c, count=1, flags=re.IGNORECASE)
+    with open(file, 'w', encoding='utf-8') as f:
+        f.write(c)
+except Exception:
+    pass
+" "$key" "$val" "$file"
     else
-        sed -i "s#<serversettings#<serversettings\n  ${key}=\"${safe_val}\"#" "$file"
+        local safe_val
+        safe_val=$(printf '%s' "$val" | sed 's/[&#\\]/\\&/g; s/"/\&quot;/g')
+        if grep -iqE "(^|[[:space:]])${key}=\"[^\"]*\"" "$file"; then
+            sed -i -E "s#(^|[[:space:]])${key}=\"[^\"]*\"#\1${key}=\"${safe_val}\"#Ig" "$file"
+        else
+            sed -i "s#<serversettings#<serversettings\n  ${key}=\"${safe_val}\"#" "$file"
+        fi
     fi
 }
 
@@ -365,7 +385,6 @@ elif [ "$HAS_SNAPSHOT" = "1" ] && [ -z "${SERVER_PASSWORD}" ] && [ -n "${PREV_SE
 fi
 if should_apply_var "SERVER_MESSAGE" "Добро пожаловать на наш сервер Barotrauma!"; then
     set_xml_setting "ServerMessageText" "${SERVER_MESSAGE}"
-    printf '  ServerMessage = %q,\n' "${SERVER_MESSAGE}" >> "${PANEL_LUA_PATH}"
 fi
 if should_apply_var "MAX_PLAYERS" "16"; then
     set_xml_setting "MaxPlayers" "${MAX_PLAYERS}"
@@ -393,7 +412,7 @@ if should_apply_var "RESPAWN_INTERVAL" "300"; then
     printf '  RespawnInterval = %s,\n' "${RESPAWN_INTERVAL}" >> "${PANEL_LUA_PATH}"
 fi
 if should_apply_var "TRAITOR_PROBABILITY" "0"; then
-    TP_FLOAT=$(awk "BEGIN { v = ${TRAITOR_PROBABILITY} + 0; if (v > 1.0) v = v / 100.0; if (v < 0) v = 0; if (v > 1) v = 1; printf \"%.2f\", v }")
+    TP_FLOAT=$(awk "BEGIN { v = ${TRAITOR_PROBABILITY} + 0; v = v / 100.0; if (v < 0) v = 0; if (v > 1) v = 1; printf \"%.2f\", v }")
     set_xml_setting "TraitorProbability" "${TP_FLOAT}"
     printf '  TraitorProbability = %s,\n' "${TP_FLOAT}" >> "${PANEL_LUA_PATH}"
 fi
